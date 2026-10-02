@@ -37,6 +37,8 @@ export function mountReceive(root: HTMLElement): () => void {
   const resetBtn = h('button', { type: 'button', class: 'secondary', hidden: true }, 'Start over');
   const result = h('div', { class: 'result', hidden: true });
   const err = h('p', { class: 'error', role: 'alert' });
+  const diagBody = h('pre', { class: 'diag' });
+  const diag = h('details', { class: 'diagnostics' }, h('summary', {}, 'Diagnostics'), diagBody);
   const panel = h(
     'div',
     { class: 'sheet' },
@@ -49,6 +51,7 @@ export function mountReceive(root: HTMLElement): () => void {
     h('div', { class: 'row small' }, videoFile, videoLink),
     err,
     result,
+    diag,
   );
   const view = h(
     'div',
@@ -113,6 +116,7 @@ export function mountReceive(root: HTMLElement): () => void {
     }
     drawOverlay();
     updateUi();
+    if (diag.open) updateDiag(r);
     if (recv.completed && !done) finish();
   };
 
@@ -128,8 +132,12 @@ export function mountReceive(root: HTMLElement): () => void {
     const frac = tot ? ok / tot : 0;
     const corr = loc.length ? loc.reduce((a, x) => a + x.corr, 0) / loc.length : 0;
     const nsym = lastResult?.format ? [24, 40, 56, 67][lastResult.format.ecc] : 40;
+    const portrait = video.videoHeight > video.videoWidth;
+    const codeLandscape = lastResult?.format ? lastResult.format.width > lastResult.format.height : true;
     if (loc.length < recent.length * 0.3)
-      advice.textContent = 'Tip: move closer so the code fills most of the view, hold steady, and avoid reflections.';
+      advice.textContent = `Tip: ${portrait && codeLandscape ? 'turn the phone sideways, ' : ''}move closer so the code fills most of the view, hold steady, and avoid reflections.`;
+    else if (portrait && codeLandscape && frac < 0.9)
+      advice.textContent = 'Tip: turn the phone sideways so the code gets more camera pixels.';
     else if (frac < 0.5) advice.textContent = 'Weak link: ask the sender to lower the density or use fewer colours.';
     else if (frac > 0.95 && corr < nsym * 0.1) advice.textContent = 'Strong link: the sender can raise density, colours or FPS for more speed.';
     else advice.textContent = '';
@@ -159,6 +167,23 @@ export function mountReceive(root: HTMLElement): () => void {
     } else {
       stats.textContent = `${procFps.toFixed(0)} fps decoded · ${located}/${frames} frames locked`;
     }
+  };
+
+  const updateDiag = (r: FrameResult) => {
+    const t = Object.entries(r.timings)
+      .map(([k, v]) => `${k} ${v.toFixed(1)}`)
+      .join(' · ');
+    const f = r.format;
+    diagBody.textContent = [
+      `video ${video.videoWidth}×${video.videoHeight} · ${workerCount} workers · ${useBitmap ? 'bitmap' : 'pixels'} path`,
+      `stage ${r.stage} · finders ${r.finders.length}${r.inferred !== undefined ? ` · corner ${r.inferred} inferred` : ''}`,
+      f ? `format ${f.width}×${f.height} · ${1 << f.bpc} colours · ECC ${'LMQH'[f.ecc]}` : 'format —',
+      `tiles ${r.tilesOk}/${r.tilesTotal} · alignment ${r.alignFound}/${r.alignTotal} · RS fixes/tile ${r.meanCorrections.toFixed(1)}`,
+      r.bleed ? `bleed b4 ${r.bleed[0].toFixed(3)} b8 ${r.bleed[1].toFixed(3)}` : '',
+      `decode ${r.ms.toFixed(1)} ms: ${t}`,
+    ]
+      .filter(Boolean)
+      .join('\n');
   };
 
   const drawOverlay = () => {

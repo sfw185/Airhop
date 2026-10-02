@@ -36,7 +36,9 @@ camera ─▶ finders ─▶ format ─▶ alignment lattice ─▶ local colour
 - **Tiles, not frames, are the unit of loss.** Each frame is cut into compact tiles, consecutive runs of cells along a generalised Hilbert curve. Each tile carries exactly one fountain packet inside its own Reed–Solomon codeword. A glare spot, a moiré band or a rolling-shutter seam only kills the tiles it touches; the other tiles in that frame still count.
 - **Colour.** 2, 4 or 8 colours per cell (1–3 bits). The 4-colour palette is the odd-parity tetrahedron of the RGB cube (white, red, green, blue), so any two symbols differ in two channels. The 8-colour palette uses one bit per channel.
 - **Local calibration.** Every alignment pattern is ringed with reference cells of each palette colour. Each data cell is classified against colours interpolated from its four nearest lattice nodes, which handles vignetting, white-balance errors, crosstalk and viewing-angle shifts. A decision-directed second pass then re-estimates the references from the data itself.
+- **Blur equalisation.** Optical blur makes neighbouring cells bleed into each other, and that bleed is the real density limit. After a first classification pass, the decoder fits how much each cell picks up from its 4- and 8-neighbours (least squares over the whole frame), subtracts that bleed using the decided neighbour colours, and classifies again. In simulation it raises the blur an 8-colour 256×144 code survives at 720p from about σ = 1.6 px to about σ = 2.1 px.
 - **Geometry.** QR-style finders in the four corners give a first perspective estimate. A lattice of alignment patterns, searched outward from the corners, then gives a piecewise perspective transform that absorbs lens distortion. Large grids draw finders with 2-cell modules so they survive when cells shrink to about 3.5 camera pixels.
+- **A hidden corner is fine.** If glare or a finger hides one finder, or a false detection stands in for it, the decoder rebuilds that corner from the other three, reads the format from the remaining copies, and re-locates the corner from the alignment lattice.
 - **Live re-tuning.** The fountain symbol size is fixed across all frame formats. The sender can change density, colours or error-correction level mid-transfer, and the receiver keeps every packet it already has.
 
 ## Frame format (protocol v1)
@@ -47,7 +49,8 @@ All units are cells. `fm` (finder module) = 2 if `max(W, H) ≥ 176`, else 1.
 | --- | --- |
 | Grid | `W × H`, each a multiple of 8 in `[40, 512]`. A quiet zone of ≥ 3 white cells surrounds it. |
 | Finders | 7×7 modules (dark ring / light ring / 3×3 dark centre) in each corner, plus a 1-module light separator. |
-| Format strips | Next to each finder, rotated pinwheel-style: 2 rows × 16 modules = 32 bits. Bits are `W/8−1` (6), `H/8−1` (6), `bpc−1` (2), `ecc` (2), then a CRC-16 salted with the corner index, so a rotated read can't pass. One more row of 16·fm palette reference cells follows. Dark = 1. |
+| Format L | Wrapped around each finder in corner-local coordinates (`u` along the corner's first edge, `v` along its second; each corner is the previous one rotated 90°). Bits 0–15 sit at modules `u ∈ {8, 9}`, `v = 0…7`; bits 16–31 at `v ∈ {8, 9}`, `u = 0…7`. Bits are `W/8−1` (6), `H/8−1` (6), `bpc−1` (2), `ecc` (2), then a CRC-16 salted with the corner index, so a rotated read can't pass. Dark = 1. |
+| Corner references | Palette cells cycling through the colours: the 2×2-module square where the L's arms meet, plus a 16×1-module strip at `u = 10…25`, `v = 0`. |
 | Alignment lattice | Nodes run from finder centre to finder centre with spacing ≤ 32. Interior nodes are 5×5 patterns (dark / light / dark centre) ringed by 24 reference cells, cycling through the palette. A node that would collide with a reserved area is left virtual (interpolated). |
 | Data | All remaining cells, in generalised-Hilbert order, cut into tiles of `⌈n·8 / bpc⌉` cells. Leftover cells are filler. |
 | Cell bits | MSB-first bit stream, `bpc` bits per cell. The value is the palette index. |
@@ -90,13 +93,13 @@ npm run dev        # http://localhost:5173
 npm run build      # static site in dist/
 ```
 
-Camera access requires a secure context (HTTPS or localhost). To use a phone as the receiver, serve over HTTPS. The included workflow publishes to GitHub Pages: in **Settings → Pages**, set **Source** to **GitHub Actions**, then push to `main`.
+Camera access requires a secure context (HTTPS or localhost). To use a phone as the receiver, serve over HTTPS. The included workflow publishes the default branch to GitHub Pages: in **Settings → Pages**, set **Source** to **GitHub Actions**, then re-run the workflow or push. Once a device has loaded the page, a service worker keeps it working offline.
 
 1. On the sending device, open **Send** and pick a file (or paste text). Go fullscreen.
 2. On the receiving device, open **Receive**, start the camera, and fill the view with the sender's screen. Hold steady; propping the phone up helps.
 3. When the bar fills, save or share the file. If the receiver reports a weak link, lower density or colours on the sender. The transfer continues without losing progress.
 
-**Decode a recorded video** (on the receive page) runs the same decoder on a video file. It's useful for debugging real captures.
+**Decode a recorded video** (on the receive page) runs the same decoder on a video file. The **Diagnostics** panel shows per-stage timings, lock state, alignment hits, Reed–Solomon corrections and the fitted blur. Both are useful for debugging real captures.
 
 ## Development
 
@@ -114,7 +117,7 @@ npm run e2e        # real Chromium: sender page → simulated camera, and fake w
 src/core/      protocol: format, layout, Reed–Solomon, frame encoder/decoder, finder detection, RaptorQ wrapper, transfer
 src/ui/        sender/receiver pages, canvas renderer, decode worker
 src/sim/       synthetic camera channel, PNG and Y4M helpers (Node only)
-scripts/       simulator sweep, E2E test, profiler
+scripts/       simulator sweep, E2E test, per-frame diagnostics, profiler, UI screenshots
 ```
 
 ## Ideas

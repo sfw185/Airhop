@@ -20,6 +20,8 @@ export interface FrameResult {
   finders: FinderCandidate[];
   /** Image positions of the finder centres in TL, TR, BR, BL order. */
   corners?: Pt[];
+  /** Corner whose finder was hidden or doubtful and was located from the lattice instead. */
+  inferred?: number;
   format?: FrameFormat;
   tilesTotal: number;
   tilesOk: number;
@@ -33,6 +35,8 @@ export interface FrameResult {
   ms: number;
   /** Per-stage timings in ms. */
   timings: Record<string, number>;
+  /** Fitted colour bleed from 4- and 8-neighbours (0..0.2): a focus/blur indicator. */
+  bleed?: [number, number];
 }
 
 export interface DecoderOptions {
@@ -138,7 +142,7 @@ function candidateQuads(cands: FinderCandidate[], max = 6): FinderCandidate[][] 
 /**
  * Quads built from three finders when the fourth was missed (glare, a finger, the frame edge).
  * The corner between the two shorter triangle sides is the one adjacent to both others, so the
- * missing corner completes the parallelogram opposite it. Returns clockwise quads plus the index
+ * missing corner is completed opposite it. Returns clockwise quads plus the index
  * of the inferred point.
  */
 function triangleQuads(cands: FinderCandidate[], max = 4): { q: FinderCandidate[]; inferred: number }[] {
@@ -154,7 +158,7 @@ function triangleQuads(cands: FinderCandidate[], max = 4): { q: FinderCandidate[
         const sides = [d2(t[1], t[2]), d2(t[0], t[2]), d2(t[0], t[1])]; // side opposite vertex i
         const v = sides.indexOf(Math.max(...sides));
         const p1 = t[(v + 1) % 3], p2 = t[(v + 2) % 3], pv = t[v];
-        const missing: FinderCandidate = { x: p1.x + p2.x - pv.x, y: p1.y + p2.y - pv.y, module: (p1.module + p2.module) / 2, count: 0 };
+        const missing = completeCorner(p1, p2, pv);
         const area = Math.abs((p1.x - pv.x) * (p2.y - pv.y) - (p1.y - pv.y) * (p2.x - pv.x));
         if (area < (mx * 30) ** 2) continue;
         const q = clockwise([pv, p1, missing, p2]);
@@ -164,13 +168,27 @@ function triangleQuads(cands: FinderCandidate[], max = 4): { q: FinderCandidate[
   return out.slice(0, max);
 }
 
+/**
+ * Fourth corner of a planar rectangle from three image corners, where `v` is the one adjacent to
+ * both others. In homogeneous coordinates X4 = X1 + X2 - Xv holds exactly; module size is
+ * inversely proportional to depth, which recovers the perspective a plain parallelogram ignores.
+ */
+function completeCorner(p1: FinderCandidate, p2: FinderCandidate, v: FinderCandidate): FinderCandidate {
+  const z1 = 1 / p1.module, z2 = 1 / p2.module, zv = 1 / v.module;
+  const z = z1 + z2 - zv;
+  if (z <= 0.2 * Math.min(z1, z2)) return { x: p1.x + p2.x - v.x, y: p1.y + p2.y - v.y, module: (p1.module + p2.module) / 2, count: 0 };
+  return { x: (p1.x * z1 + p2.x * z2 - v.x * zv) / z, y: (p1.y * z1 + p2.y * z2 - v.y * zv) / z, module: 1 / z, count: 0 };
+}
+
 function dimCandidates(est: number, preferred?: number): number[] {
   const out: number[] = [];
   const lo = Math.max(MIN_DIM, Math.floor((est * 0.88) / 8) * 8);
   const hi = Math.min(MAX_DIM, Math.ceil((est * 1.12) / 8) * 8);
   for (let d = lo; d <= hi; d += 8) out.push(d);
   out.sort((a, b) => Math.abs(a - est) - Math.abs(b - est));
-  const res = out.slice(0, 4);
+  // Perspective and blur bias the module estimate by a few percent, so keep several candidates;
+  // the salted format CRC rejects the wrong ones.
+  const res = out.slice(0, 6);
   if (preferred && preferred >= lo && preferred <= hi && !res.includes(preferred)) res.unshift(preferred);
   if (preferred && res.includes(preferred)) {
     res.splice(res.indexOf(preferred), 1);
@@ -242,7 +260,7 @@ export class FrameDecoder {
     this.last = { format: loc.format, assignment: loc.assignment };
     const layout = getLayout(loc.format);
     const res = this.decodeGrid(frame, gray.data, layout, loc);
-    return { ...base, ...res, stage: 'decoded', corners: loc.corners, format: loc.format, ms: performance.now() - t0 };
+    return { ...base, ...res, stage: 'decoded', corners: loc.corners, inferred: loc.inferred, format: loc.format, ms: performance.now() - t0 };
   }
 
   private locate(g: Uint8Array, w: number, h: number, finders: FinderCandidate[]): Located | null {
@@ -287,9 +305,32 @@ export class FrameDecoder {
             const src = [0, 1, 2, 3].map((k) => finderCenter(W, H, fm, k));
             const H0 = fitHomography(src, c);
             if (!H0) continue;
-            const f = this.readFormat(g, w, h, H0, W, H, fm, inferred);
+            const f = this.readFormat(g, w, h, H0, W, H, fm, c, inferred);
             if (f && f.format.width === W && f.format.height === H) {
-              return { format: f.format, corners: c.map((p) => ({ x: p.x, y: p.y })), H0, black: f.black, white: f.white, quadIndex: qi, assignment: a, inferred };
+              let best = { f, H0, corners: c.map((p) => ({ x: p.x, y: p.y })), inferred };
+              if (inferred === undefined && f.cornerOk.some((ok) => !ok)) {
+                // A false finder standing in for a hidden one skews the transform, so several
+                // copies fail. Try rebuilding each failing corner from the other three and keep
+                // the version under which the most copies agree.
+                let bestOk = f.cornerOk.filter(Boolean).length;
+                for (let k = 0; k < 4; k++) {
+                  if (f.cornerOk[k]) continue;
+                  const alt = best.corners.map((p) => ({ ...p }));
+                  const done = completeCorner(c[(k + 1) % 4], c[(k + 3) % 4], c[(k + 2) % 4]);
+                  alt[k] = { x: done.x, y: done.y };
+                  const H1 = fitHomography(src, alt);
+                  if (!H1) continue;
+                  const altC = c.map((p, i) => (i === k ? { ...p, x: alt[k].x, y: alt[k].y, module: done.module } : p));
+                  const f1 = this.readFormat(g, w, h, H1, W, H, fm, altC, k);
+                  if (!f1 || f1.format.width !== W || f1.format.height !== H) continue;
+                  const ok = f1.cornerOk.filter((v, i) => v && i !== k).length;
+                  if (ok > bestOk) {
+                    bestOk = ok;
+                    best = { f: f1, H0: H1, corners: alt, inferred: k };
+                  }
+                }
+              }
+              return { format: best.f.format, corners: best.corners, H0: best.H0, black: best.f.black, white: best.f.white, quadIndex: qi, assignment: a, inferred: best.inferred };
             }
           }
         }
@@ -298,7 +339,17 @@ export class FrameDecoder {
     return null;
   }
 
-  private readFormat(g: Uint8Array, w: number, h: number, H0: Mat3, W: number, H: number, fm: number, skip?: number): { format: FrameFormat; black: number; white: number } | null {
+  private readFormat(
+    g: Uint8Array,
+    w: number,
+    h: number,
+    H0: Mat3,
+    W: number,
+    H: number,
+    fm: number,
+    corners: FinderCandidate[],
+    skip?: number,
+  ): { format: FrameFormat; black: number; white: number; cornerOk: boolean[] } | null {
     const at = (gx: number, gy: number) => {
       const p = apply(H0, gx, gy);
       return bilinearGray(g, w, h, p.x, p.y);
@@ -321,6 +372,7 @@ export class FrameDecoder {
     if (whiteSum - blackSum < used * 20) return null;
     if (skip !== undefined) thresholds[skip] = (blackSum + whiteSum) / (2 * used);
     const bitsPerCorner: Uint8Array[] = [];
+    const copies: (FrameFormat | null)[] = [];
     for (let corner = 0; corner < 4; corner++) {
       const bits = new Uint8Array(32);
       for (let b = 0; b < 32; b++) {
@@ -328,9 +380,27 @@ export class FrameDecoder {
         bits[b] = at(p.x, p.y) < thresholds[corner] ? 1 : 0;
         votes[b] += bits[b];
       }
+      let copy = decodeFormatBits(bits, corner);
+      if (!copy && corner !== skip) {
+        // Re-read in a frame local to this finder: its own module size, axes toward its
+        // neighbours. The L is within ~7 modules of the finder, so this is immune to the global
+        // transform's perspective and distortion errors.
+        const local = this.localFrame(W, H, fm, corners, corner);
+        const lbits = new Uint8Array(32);
+        for (let b = 0; b < 32; b++) {
+          const p = formatBitPoint(W, H, fm, corner, b);
+          const q = local(p.x, p.y);
+          lbits[b] = bilinearGray(g, w, h, q.x, q.y) < thresholds[corner] ? 1 : 0;
+        }
+        copy = decodeFormatBits(lbits, corner);
+        if (copy) bits.set(lbits);
+      }
       bitsPerCorner.push(bits);
-      if (!found) found = decodeFormatBits(bits, corner);
+      copies.push(copy);
+      if (!found) found = copy;
     }
+    votes.fill(0);
+    for (const bits of bitsPerCorner) for (let b = 0; b < 32; b++) votes[b] += bits[b];
     if (!found) {
       // Majority vote across corners can recover from a single bad copy per bit. Each copy has
       // its own CRC salt, so vote on the data bits and re-check against each corner's CRC.
@@ -342,59 +412,110 @@ export class FrameDecoder {
       }
     }
     if (!found) return null;
-    return { format: found, black: blackSum / used, white: whiteSum / used };
+    const f = found;
+    const cornerOk = copies.map((c) => !!c && c.width === f.width && c.height === f.height && c.bpc === f.bpc && c.ecc === f.ecc);
+    return { format: found, black: blackSum / used, white: whiteSum / used, cornerOk };
+  }
+
+  /** Affine map grid -> image anchored at one finder, scaled by that finder's module size. */
+  private localFrame(W: number, H: number, fm: number, c: FinderCandidate[], k: number): (x: number, y: number) => Pt {
+    const gc = finderCenter(W, H, fm, k);
+    const kx = k ^ 1; // horizontal neighbour: TL<->TR, BR<->BL
+    const ky = 3 - k; // vertical neighbour: TL<->BL, TR<->BR
+    const sx = Math.sign(finderCenter(W, H, fm, kx).x - gc.x);
+    const sy = Math.sign(finderCenter(W, H, fm, ky).y - gc.y);
+    const vx = { x: c[kx].x - c[k].x, y: c[kx].y - c[k].y };
+    const vy = { x: c[ky].x - c[k].x, y: c[ky].y - c[k].y };
+    const s = c[k].module / fm;
+    const lx = Math.hypot(vx.x, vx.y) || 1, ly = Math.hypot(vy.x, vy.y) || 1;
+    const ex = { x: (vx.x / lx) * s * sx, y: (vx.y / lx) * s * sx };
+    const ey = { x: (vy.x / ly) * s * sy, y: (vy.y / ly) * s * sy };
+    return (x, y) => ({ x: c[k].x + ex.x * (x - gc.x) + ey.x * (y - gc.y), y: c[k].y + ex.y * (x - gc.x) + ey.y * (y - gc.y) });
   }
 
   private refineNodes(g: Uint8Array, w: number, h: number, layout: Layout, loc: Located): { pos: Pt[]; found: number; total: number } {
-    const { nx, ny, nodes } = layout;
-    const H0 = loc.H0;
+    const { nx, ny, nodes, fm } = layout;
     const N = nodes.length;
-    const pos: Pt[] = new Array(N);
-    const disp: (Pt | null)[] = new Array(N).fill(null);
+    const pos: (Pt | undefined)[] = new Array(N);
     const contrast = Math.max(20, loc.white - loc.black);
     const cornerIdx = [0, nx - 1, N - 1, N - nx];
-    for (let k = 0; k < 4; k++) {
-      if (k === loc.inferred) continue;
-      pos[cornerIdx[k]] = loc.corners[k];
-      disp[cornerIdx[k]] = { x: 0, y: 0 };
-    }
-    const order: number[] = [];
-    for (let idx = 0; idx < N; idx++) if (nodes[idx].kind === 'align') order.push(idx);
+    const inferredIdx = loc.inferred === undefined ? -1 : cornerIdx[loc.inferred];
+    for (let k = 0; k < 4; k++) if (k !== loc.inferred) pos[cornerIdx[k]] = loc.corners[k];
+    const align: number[] = [];
+    for (let idx = 0; idx < N; idx++) if (nodes[idx].kind === 'align') align.push(idx);
+    // Search outward from the corners so each prediction can lean on already-found neighbours.
     const latDist = (idx: number) => {
       const i = idx % nx, j = (idx / nx) | 0;
       return Math.min(Math.max(i, j), Math.max(nx - 1 - i, j), Math.max(i, ny - 1 - j), Math.max(nx - 1 - i, ny - 1 - j));
     };
-    order.sort((a, b) => latDist(a) - latDist(b));
+    align.sort((a, b) => latDist(a) - latDist(b));
 
-    const neighbourDisp = (idx: number, radius: number): Pt | null => {
+    /** Weighted mean residual (position minus model prediction) of found neighbours. */
+    const neighbourResidual = (Hm: Mat3, idx: number): Pt => {
       const i = idx % nx, j = (idx / nx) | 0;
-      let sx = 0, sy = 0, sw = 0;
-      for (let dj = -radius; dj <= radius; dj++)
-        for (let di = -radius; di <= radius; di++) {
-          if (!di && !dj) continue;
-          const ii = i + di, jj = j + dj;
-          if (ii < 0 || jj < 0 || ii >= nx || jj >= ny) continue;
-          const d = disp[jj * nx + ii];
-          if (!d) continue;
-          const wgt = 1 / (di * di + dj * dj);
-          sx += d.x * wgt;
-          sy += d.y * wgt;
-          sw += wgt;
-        }
-      return sw > 0 ? { x: sx / sw, y: sy / sw } : null;
+      for (const radius of [1, 2]) {
+        let sx = 0, sy = 0, sw = 0;
+        for (let dj = -radius; dj <= radius; dj++)
+          for (let di = -radius; di <= radius; di++) {
+            if (!di && !dj) continue;
+            const ii = i + di, jj = j + dj;
+            if (ii < 0 || jj < 0 || ii >= nx || jj >= ny) continue;
+            const k = jj * nx + ii;
+            const p = pos[k];
+            if (!p) continue;
+            const m = apply(Hm, nodes[k].gx, nodes[k].gy);
+            const wgt = 1 / (di * di + dj * dj);
+            sx += (p.x - m.x) * wgt;
+            sy += (p.y - m.y) * wgt;
+            sw += wgt;
+          }
+        if (sw > 0) return { x: sx / sw, y: sy / sw };
+      }
+      return { x: 0, y: 0 };
     };
 
-    let found = 0;
-    for (const idx of order) {
+    /** Coarse grid search plus hill-climb for the best template score around `pred`. */
+    const search = (pred: Pt, radius: number, step: number, score: (x: number, y: number) => number) => {
+      let best = -Infinity, bx = pred.x, by = pred.y;
+      for (let dy = -radius; dy <= radius; dy += step)
+        for (let dx = -radius; dx <= radius; dx += step) {
+          const sc = score(pred.x + dx, pred.y + dy);
+          if (sc > best) {
+            best = sc;
+            bx = pred.x + dx;
+            by = pred.y + dy;
+          }
+        }
+      for (let st = step / 2; st >= 0.25; st /= 2) {
+        let improved = true;
+        while (improved) {
+          improved = false;
+          for (const [dx, dy] of [[st, 0], [-st, 0], [0, st], [0, -st]]) {
+            const sc = score(bx + dx, by + dy);
+            if (sc > best) {
+              best = sc;
+              bx += dx;
+              by += dy;
+              improved = true;
+            }
+          }
+        }
+      }
+      return { x: bx, y: by, score: best };
+    };
+
+    const axes = (Hm: Mat3, gx: number, gy: number, unit: number) => {
+      const c = apply(Hm, gx, gy), px = apply(Hm, gx + unit, gy), py = apply(Hm, gx, gy + unit);
+      const ex = { x: px.x - c.x, y: px.y - c.y }, ey = { x: py.x - c.x, y: py.y - c.y };
+      return { ex, ey, len: Math.max(Math.hypot(ex.x, ex.y), Math.hypot(ey.x, ey.y)) };
+    };
+
+    // Alignment pattern: dark centre, light ring at one cell, dark ring at two.
+    const findAlign = (Hm: Mat3, idx: number): boolean => {
       const node = nodes[idx];
-      const base = apply(H0, node.gx, node.gy);
-      const nd = neighbourDisp(idx, 1) ?? neighbourDisp(idx, 2) ?? { x: 0, y: 0 };
-      const pred = { x: base.x + nd.x, y: base.y + nd.y };
-      const px = apply(H0, node.gx + 1, node.gy);
-      const py = apply(H0, node.gx, node.gy + 1);
-      const ex = { x: px.x - base.x, y: px.y - base.y };
-      const ey = { x: py.x - base.x, y: py.y - base.y };
-      const cell = Math.max(Math.hypot(ex.x, ex.y), Math.hypot(ey.x, ey.y));
+      const base = apply(Hm, node.gx, node.gy);
+      const r = neighbourResidual(Hm, idx);
+      const { ex, ey, len } = axes(Hm, node.gx, node.gy, 1);
       const score = (cx: number, cy: number) => {
         let r1 = 0, r2 = 0;
         for (const [a, b] of ALIGN_RING1) r1 += bilinearGray(g, w, h, cx + a * ex.x + b * ey.x, cy + a * ex.y + b * ey.y);
@@ -402,54 +523,39 @@ export class FrameDecoder {
         const c0 = bilinearGray(g, w, h, cx, cy);
         return (r1 / ALIGN_RING1.length - (c0 + r2 / ALIGN_RING2.length) / 2) / contrast;
       };
-      const R = 2 * cell;
-      const step = Math.max(1, cell / 3);
-      let best = -Infinity, bx = pred.x, by = pred.y;
-      for (let dy = -R; dy <= R; dy += step)
-        for (let dx = -R; dx <= R; dx += step) {
-          const s = score(pred.x + dx, pred.y + dy);
-          if (s > best) {
-            best = s;
-            bx = pred.x + dx;
-            by = pred.y + dy;
-          }
-        }
-      // Local refinement at sub-step resolution.
-      let st = step / 2;
-      while (st >= 0.25) {
-        let improved = true;
-        while (improved) {
-          improved = false;
-          for (const [dx, dy] of [[st, 0], [-st, 0], [0, st], [0, -st]]) {
-            const s = score(bx + dx, by + dy);
-            if (s > best) {
-              best = s;
-              bx += dx;
-              by += dy;
-              improved = true;
-            }
-          }
-        }
-        st /= 2;
+      const best = search({ x: base.x + r.x, y: base.y + r.y }, 2 * len, Math.max(1, len / 3), score);
+      if (best.score <= 0.3) return false;
+      pos[idx] = { x: best.x, y: best.y };
+      return true;
+    };
+
+    // Pass 1: predictions from the finder-only transform.
+    let found = 0;
+    for (const idx of align) if (findAlign(loc.H0, idx)) found++;
+
+    // Pass 2: a least-squares fit to everything found so far is far better than the finder-only
+    // transform when a corner was inferred, and lets missed patterns be retried.
+    let Hm = loc.H0;
+    {
+      const src: Pt[] = [], dst: Pt[] = [];
+      for (let idx = 0; idx < N; idx++) {
+        const p = pos[idx];
+        if (!p) continue;
+        src.push({ x: nodes[idx].gx, y: nodes[idx].gy });
+        dst.push(p);
       }
-      if (best > 0.3) {
-        pos[idx] = { x: bx, y: by };
-        disp[idx] = { x: bx - base.x, y: by - base.y };
-        found++;
-      }
+      if (src.length >= 6) Hm = fitHomography(src, dst) ?? loc.H0;
     }
-    if (loc.inferred !== undefined) {
-      // Find the missed finder near where its neighbours put it: dark centre, light ring at two
-      // modules, dark ring at three.
-      const idx = cornerIdx[loc.inferred];
-      const node = nodes[idx];
-      const fm = layout.fm;
-      const base = apply(H0, node.gx, node.gy);
-      const nd = neighbourDisp(idx, 1) ?? neighbourDisp(idx, 2) ?? { x: 0, y: 0 };
-      const pred = { x: base.x + nd.x, y: base.y + nd.y };
-      const px = apply(H0, node.gx + fm, node.gy), py = apply(H0, node.gx, node.gy + fm);
-      const ex = { x: px.x - base.x, y: px.y - base.y }, ey = { x: py.x - base.x, y: py.y - base.y };
-      const mod = Math.max(Math.hypot(ex.x, ex.y), Math.hypot(ey.x, ey.y));
+    if (found < align.length) for (const idx of align) if (!pos[idx] && findAlign(Hm, idx)) found++;
+
+    if (inferredIdx >= 0) {
+      // Locate the hidden or suspect finder: dark centre, light ring at two modules, dark ring at
+      // three. Fall back to the lattice prediction if it is not visible.
+      const node = nodes[inferredIdx];
+      const base = apply(Hm, node.gx, node.gy);
+      const r = neighbourResidual(Hm, inferredIdx);
+      const pred = { x: base.x + r.x, y: base.y + r.y };
+      const { ex, ey, len } = axes(Hm, node.gx, node.gy, fm);
       const score = (cx: number, cy: number) => {
         let light = 0, dark = 0;
         for (const [a, b] of ALIGN_RING1) {
@@ -459,32 +565,17 @@ export class FrameDecoder {
         const c0 = bilinearGray(g, w, h, cx, cy);
         return (light / 8 - (c0 + dark / 8) / 2) / contrast;
       };
-      const R = 3 * mod;
-      let best = -Infinity, bx = pred.x, by = pred.y;
-      for (let st = Math.max(1, mod / 3), first = true; st >= 0.25; st /= 2, first = false) {
-        const r = first ? R : st * 2;
-        const cx0 = bx, cy0 = by;
-        for (let dy = -r; dy <= r; dy += st)
-          for (let dx = -r; dx <= r; dx += st) {
-            const sc = score(cx0 + dx, cy0 + dy);
-            if (sc > best) {
-              best = sc;
-              bx = cx0 + dx;
-              by = cy0 + dy;
-            }
-          }
-      }
-      pos[idx] = best > 0.3 ? { x: bx, y: by } : pred;
-      loc.corners[loc.inferred] = pos[idx];
+      const best = search(pred, 2 * len, Math.max(1, len / 3), score);
+      pos[inferredIdx] = best.score > 0.3 ? { x: best.x, y: best.y } : pred;
+      loc.corners[loc.inferred!] = pos[inferredIdx]!;
     }
     for (let idx = 0; idx < N; idx++) {
       if (pos[idx]) continue;
-      const node = nodes[idx];
-      const base = apply(H0, node.gx, node.gy);
-      const nd = neighbourDisp(idx, 1) ?? neighbourDisp(idx, 2) ?? { x: 0, y: 0 };
-      pos[idx] = { x: base.x + nd.x, y: base.y + nd.y };
+      const base = apply(Hm, nodes[idx].gx, nodes[idx].gy);
+      const r = neighbourResidual(Hm, idx);
+      pos[idx] = { x: base.x + r.x, y: base.y + r.y };
     }
-    return { pos, found, total: order.length };
+    return { pos: pos as Pt[], found, total: align.length };
   }
 
   /**
@@ -850,6 +941,7 @@ export class FrameDecoder {
       alignFound: found,
       alignTotal: total,
       meanCorrections: payloads.length ? corrections / payloads.length : 0,
+      bleed: this.opts.equalize ? [...this.lastBeta] : undefined,
     };
   }
 }

@@ -18,9 +18,10 @@ import { mulberry32 } from './prng';
  * to a few camera pixels.
  *
  *  - Four 7x7-module QR-style finder patterns in the corners, each with a one-module separator.
- *  - Next to each finder, a strip of 16x3 modules (rotated pinwheel-style around the frame):
- *    two rows of format bits (32 bits: 16 data + CRC-16 salted by corner) and one row of
- *    palette reference cells.
+ *  - Wrapped around each finder, QR-style, an L of 32 format bits (16 data + CRC-16 salted by
+ *    corner), two modules thick, so every bit is within ~7 modules of the finder centre and
+ *    survives lens distortion. Each corner is the previous one rotated by 90 degrees.
+ *  - Palette reference cells in the corner of each L and in a 16x1-module strip along the edge.
  *  - A lattice of 5x5-cell alignment patterns (spacing <= ALIGN_SPACING) whose centres, together
  *    with the finder centres, drive a piecewise perspective transform. Each alignment pattern is
  *    ringed by 24 palette reference cells for local colour calibration.
@@ -47,29 +48,37 @@ export function finderModule(W: number, H: number): number {
 }
 
 /**
- * Grid coordinate of a point in strip space for corner 0=TL, 1=TR, 2=BR, 3=BL.
- * su runs along the strip [0, 16*fm), sv across it [0, 3*fm): rows sv < 2*fm hold format bits,
- * the last fm rows hold palette references.
+ * Maps corner-local coordinates (u along the corner's first edge, v along its second, both
+ * measured from the outer corner) to grid coordinates for corner 0=TL, 1=TR, 2=BR, 3=BL.
+ * Each corner is the previous one rotated by 90 degrees.
  */
-export function stripPoint(W: number, H: number, fm: number, corner: number, su: number, sv: number): { x: number; y: number } {
-  const o = 8 * fm;
+export function cornerPoint(W: number, H: number, corner: number, u: number, v: number): { x: number; y: number } {
   switch (corner) {
     case 0:
-      return { x: o + su, y: sv };
+      return { x: u, y: v };
     case 1:
-      return { x: W - sv, y: o + su };
+      return { x: W - v, y: u };
     case 2:
-      return { x: W - o - su, y: H - sv };
+      return { x: W - u, y: H - v };
     default:
-      return { x: sv, y: H - o - su };
+      return { x: v, y: H - u };
   }
+}
+
+/**
+ * Corner-local module position of format bit `b`: bits 0-15 fill the two module columns right of
+ * the separator (u = 8, 9), bits 16-31 the two module rows below it (v = 8, 9).
+ */
+function formatBitModule(b: number): { u: number; v: number } {
+  if (b < 16) return { u: 8 + (b >> 3), v: b & 7 };
+  const k = b - 16;
+  return { u: k & 7, v: 8 + (k >> 3) };
 }
 
 /** Centre (grid coordinates) of format bit `b` for a corner. */
 export function formatBitPoint(W: number, H: number, fm: number, corner: number, b: number): { x: number; y: number } {
-  const u = b % STRIP_LEN;
-  const v = Math.floor(b / STRIP_LEN);
-  return stripPoint(W, H, fm, corner, (u + 0.5) * fm, (v + 0.5) * fm);
+  const m = formatBitModule(b);
+  return cornerPoint(W, H, corner, (m.u + 0.5) * fm, (m.v + 0.5) * fm);
 }
 
 /** Finder centre (grid coordinates) for corner 0=TL, 1=TR, 2=BR, 3=BL. */
@@ -169,27 +178,33 @@ export class Layout {
       }
     }
 
-    // Format strips and strip references (pinwheel).
+    // Format L and palette references around each finder.
     const stripRefs: { cell: number; color: number }[][] = [];
+    const cellAt = (c: number, u: number, v: number) => {
+      const p = cornerPoint(W, H, c, u + 0.5, v + 0.5);
+      return { x: Math.floor(p.x), y: Math.floor(p.y) };
+    };
     for (let c = 0; c < 4; c++) {
       const fbits = encodeFormatBits(format, c);
-      for (let su = 0; su < STRIP_LEN * fm; su++) {
-        for (let sv = 0; sv < 2 * fm; sv++) {
-          const p = stripPoint(W, H, fm, c, su + 0.5, sv + 0.5);
-          const b = Math.floor(sv / fm) * STRIP_LEN + Math.floor(su / fm);
-          set(Math.floor(p.x), Math.floor(p.y), Role.Format, fbits[b] ? black : white);
-        }
+      for (let b = 0; b < 32; b++) {
+        const m = formatBitModule(b);
+        for (let du = 0; du < fm; du++)
+          for (let dv = 0; dv < fm; dv++) {
+            const { x, y } = cellAt(c, m.u * fm + du, m.v * fm + dv);
+            set(x, y, Role.Format, fbits[b] ? black : white);
+          }
       }
       const refs: { cell: number; color: number }[] = [];
-      for (let su = 0; su < STRIP_LEN * fm; su++) {
-        for (let sv = 2 * fm; sv < 3 * fm; sv++) {
-          const p = stripPoint(W, H, fm, c, su + 0.5, sv + 0.5);
-          const x = Math.floor(p.x), y = Math.floor(p.y);
-          const color = (su + sv) % P;
-          set(x, y, Role.Ref, this.palette[color]);
-          refs.push({ cell: y * W + x, color });
-        }
-      }
+      const addRef = (u: number, v: number) => {
+        const { x, y } = cellAt(c, u, v);
+        const color = refs.length % P;
+        set(x, y, Role.Ref, this.palette[color]);
+        refs.push({ cell: y * W + x, color });
+      };
+      // The 2x2-module square where the two arms of the L meet...
+      for (let v = 8 * fm; v < 10 * fm; v++) for (let u = 8 * fm; u < 10 * fm; u++) addRef(u, v);
+      // ...and a strip along the first edge.
+      for (let v = 0; v < fm; v++) for (let u = 10 * fm; u < (10 + STRIP_LEN) * fm; u++) addRef(u, v);
       stripRefs.push(refs);
     }
 

@@ -65,8 +65,8 @@ export function validateFormat(f: FrameFormat): void {
 
 /**
  * 16 data bits: width/8-1 (6) | height/8-1 (6) | bpc-1 (2) | ecc (2), then CRC-16.
- * The CRC is salted with the corner index: the pinwheel placement of the four copies is
- * rotation-symmetric, so without the salt a rotated read would pass the check.
+ * The CRC is salted with the corner index: the four copies are placed rotation-symmetrically,
+ * so without the salt a rotated read would pass the check.
  */
 export function encodeFormatBits(f: FrameFormat, corner: number): Uint8Array {
   validateFormat(f);

@@ -1,0 +1,11 @@
+{
+  "name": "Airhop",
+  "short_name": "Airhop",
+  "description": "Send files between devices with a screen and a camera. No network needed.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0f1115",
+  "theme_color": "#0f1115",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}

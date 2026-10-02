@@ -5,6 +5,7 @@ import { packFile, SendSession } from '../core/transfer';
 import { formatBytes, formatDuration, formatRate, h } from './dom';
 import { FrameRenderer, QUIET } from './render';
 import wasmUrl from 'raptorq/raptorq_bg.wasm?url';
+import { renderSVG } from 'uqr';
 
 interface Settings {
   density: number;
@@ -40,6 +41,19 @@ function saveSettings(s: Settings): void {
   }
 }
 
+/** A QR code that opens the receiver on another device (most phone cameras read QR natively). */
+function receiverLink(): HTMLElement | null {
+  if (!/^https?:$/.test(location.protocol)) return null;
+  const url = `${location.origin}${location.pathname}#receive`;
+  const svg = renderSVG(url, { border: 2, pixelSize: 4 });
+  return h(
+    'div',
+    { class: 'receiver-link' },
+    h('img', { src: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`, alt: 'QR code linking to the receiver', width: 132, height: 132 }),
+    h('div', {}, h('strong', {}, 'Receiving on a phone?'), h('span', {}, 'Scan this with its camera to open the receiver, or visit '), h('code', {}, url)),
+  );
+}
+
 const round8 = (v: number) => Math.min(MAX_DIM, Math.max(MIN_DIM, Math.round(v / 8) * 8));
 
 export function mountSend(root: HTMLElement): () => void {
@@ -66,6 +80,7 @@ export function mountSend(root: HTMLElement): () => void {
     sendText,
     err,
     h('p', { class: 'hint' }, 'Keep this screen bright and in view of the receiving camera. Larger is better: go fullscreen once the code is running.'),
+    receiverLink(),
   );
   root.append(setup);
 

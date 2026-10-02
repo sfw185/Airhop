@@ -98,7 +98,10 @@ nav .title {
 
 .error {
   color: var(--bad);
-  min-height: 1em;
+}
+
+.error:empty {
+  display: none;
 }
 
 .hint,
@@ -440,4 +443,49 @@ nav .title {
 
 .sheet .ctl input[type='range'] {
   width: 8rem;
+}
+
+.receiver-link {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  padding: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: var(--muted);
+}
+
+.receiver-link img {
+  border-radius: 6px;
+  background: #fff;
+  flex: none;
+}
+
+.receiver-link div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.receiver-link strong {
+  color: var(--text);
+}
+
+.receiver-link code {
+  overflow-wrap: anywhere;
+  font-size: 0.8rem;
+}
+
+.diagnostics summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.diag {
+  font-size: 0.75rem;
+  color: var(--muted);
+  white-space: pre-wrap;
+  margin: 0.4rem 0 0;
 }
