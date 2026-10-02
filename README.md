@@ -66,18 +66,20 @@ Palettes (index → RGB):
 
 ## Performance
 
-Payload per frame (after all headers, parity and patterns) at ECC M:
+Payload per frame (after all headers, parity and patterns) at ECC M, and the share of tiles decoded per frame through the simulated camera. `px/cell` is how many camera pixels each cell spans when the code fills 88% of the image width. Each cell of the table averages 8 (720p) or 6 (1080p) random cameras per severity.
 
-| Grid | 4 colours | 8 colours |
-| --- | --- | --- |
-| 128×72 | 1.4 KB | 2.2 KB |
-| 192×104 | 3.1 KB | 4.8 KB |
-| 256×144 | 6.0 KB | 9.1 KB |
-| 320×176 | 9.6 KB | 14.4 KB |
+| Grid | Colours | Payload/frame | 720p camera (px/cell): mild / moderate / harsh | 1080p camera (px/cell): mild / moderate / harsh |
+| --- | --- | --- | --- | --- |
+| 128×72 | 4 | 1.4 KB | (8.4) 100% / 100% / 100% | (12.6) 100% / 100% / 100% |
+| 128×72 | 8 | 2.2 KB | (8.4) 100% / 100% / 100% | (12.6) 100% / 100% / 100% |
+| 192×104 | 4 | 3.1 KB | (5.7) 100% / 100% / 100% | (8.5) 100% / 100% / 100% |
+| 192×104 | 8 | 4.6 KB | (5.7) 100% / 100% / 100% | (8.5) 100% / 100% / 100% |
+| 256×144 | 4 | 6.0 KB | (4.3) 100% / 100% / 98% | (6.4) 100% / 100% / 98% |
+| 256×144 | 8 | 9.1 KB | (4.3) 100% / 100% / 98% | (6.4) 100% / 100% / 99% |
+| 320×176 | 4 | 9.5 KB | (3.5) 100% / 100% / 82% | (5.2) 100% / 100% / 79% |
+| 320×176 | 8 | 14.3 KB | (3.5) 100% / 100% / 56% | (5.2) 100% / 100% / 83% |
 
-Throughput is payload per frame × frames per second. A 256×144, 8-colour code at 10 fps is about 90 KB/s (0.7 Mbit/s). A 320×176 code at 10 fps is about 140 KB/s.
-
-SIM_RESULTS_PLACEHOLDER
+Throughput is payload per frame × frames per second. A 256×144, 8-colour code at 10 fps is about 90 KB/s (0.7 Mbit/s); a 320×176 one is about 140 KB/s. Losing a few percent of tiles only costs the same few percent of speed, because every decoded tile is a useful fountain packet.
 
 These numbers come from a synthetic camera (`src/sim/channel.ts`) that models perspective, barrel distortion, optical and motion blur, colour crosstalk and white-balance error, gamma, over-exposure, glare, vignetting, moiré banding, sensor noise and rolling-shutter seams. **They have not been validated on real phones yet.** Expect real-world results to be lower, and start with the defaults (Medium density, 4 colours, ECC M, 10 fps).
 
