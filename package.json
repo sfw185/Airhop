@@ -13,7 +13,6 @@
     "sim": "tsx scripts/simulate.ts",
     "e2e": "tsx scripts/e2e.ts"
   },
-  "license": "MIT",
   "devDependencies": {
     "@types/node": "^26.6.4",
     "playwright-core": "^1.63.0",

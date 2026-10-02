@@ -39,6 +39,8 @@ export interface CameraParams {
   seamWidth?: number;
   /** Seam direction: 'rows' (horizontal seam) or 'cols'. */
   seamAxis?: 'rows' | 'cols';
+  /** Moiré banding: multiplicative sinusoid (amplitude 0..1, period in camera px, angle rad). */
+  moire?: { amp: number; period: number; angle: number };
   /** Motion blur: displacement in camera px over the exposure. */
   motion?: { x: number; y: number };
   background: [number, number, number];
@@ -163,7 +165,11 @@ export function capture(screen: Image, cam: CameraParams, next?: Image): Image {
       const o = (y * cw + x) * 3;
       const r = lin[o], g = lin[o + 1], b = lin[o + 2];
       const dx = (x - cx) * norm, dy = (y - cy) * norm;
-      const v = cam.gain * (1 - cam.vignette * (dx * dx + dy * dy));
+      let v = cam.gain * (1 - cam.vignette * (dx * dx + dy * dy));
+      if (cam.moire) {
+        const { amp, period, angle } = cam.moire;
+        v *= 1 + amp * Math.sin(((x * Math.cos(angle) + y * Math.sin(angle)) * 2 * Math.PI) / period);
+      }
       let amb = cam.ambient;
       if (cam.glare) {
         const gd = ((x - cam.glare.x) ** 2 + (y - cam.glare.y) ** 2) / (cam.glare.r * cam.glare.r);
@@ -231,11 +237,13 @@ export function randomCamera(seed: number, screenW: number, screenH: number, opt
     k1: (u() - 0.3) * 0.08 * sev,
     blur: 0.6 + 1.2 * sev * u(),
     color,
-    gain: 0.75 + 0.3 * u(),
+    // Harsh conditions include over-exposure, which clips and desaturates the bright colours.
+    gain: 0.75 + 0.3 * u() + 0.35 * sev * sev * u(),
     ambient: 0.01 + 0.06 * sev * u(),
     glare: sev > 0.5 && u() < 0.5 ? { x: cx + (u() - 0.5) * bw, y: cy + (u() - 0.5) * bh, r: bw * (0.05 + 0.1 * u()), s: 0.3 * u() } : undefined,
     vignette: 0.25 * sev * u(),
     noise: 1 + 5 * sev * u(),
+    moire: sev > 0 && u() < 0.6 ? { amp: 0.15 * sev * u(), period: 12 + 60 * u(), angle: u() * Math.PI } : undefined,
     background: [40, 40, 45],
     seed: seed ^ 0x9e3779b9,
   };

@@ -121,6 +121,8 @@ export class Layout {
   readonly cellU: Float32Array;
   /** First cell column of each lattice quad column, plus W as a sentinel (length nx). */
   readonly quadColStart: Int32Array;
+  /** Non-data cells that touch a data cell (sampled as context for the equaliser). */
+  readonly contextCells: Int32Array;
 
   constructor(format: FrameFormat) {
     validateFormat(format);
@@ -278,6 +280,22 @@ export class Layout {
     this.cellQuad = new Int32Array(W * H);
     this.cellT = new Float32Array(W * H);
     this.cellU = new Float32Array(W * H);
+    const ctx: number[] = [];
+    for (let y = 0; y < H; y++)
+      for (let x = 0; x < W; x++) {
+        if (role[y * W + x] === Role.Data) continue;
+        let touches = false;
+        for (let dy = -1; dy <= 1 && !touches; dy++)
+          for (let dx = -1; dx <= 1; dx++) {
+            const xx = x + dx, yy = y + dy;
+            if (xx >= 0 && yy >= 0 && xx < W && yy < H && role[yy * W + xx] === Role.Data) {
+              touches = true;
+              break;
+            }
+          }
+        if (touches) ctx.push(y * W + x);
+      }
+    this.contextCells = Int32Array.from(ctx);
     this.quadColStart = new Int32Array(nx).fill(W);
     for (let x = W - 1; x >= 0; x--) {
       let i = 0;

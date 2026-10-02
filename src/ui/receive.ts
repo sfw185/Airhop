@@ -21,6 +21,17 @@ export function mountReceive(root: HTMLElement): () => void {
   const startBtn = h('button', { type: 'button' }, 'Start camera');
   const camSelect = h('select', { 'aria-label': 'Camera', hidden: true }) as HTMLSelectElement;
   const zoom = h('input', { type: 'range', 'aria-label': 'Zoom', hidden: true }) as HTMLInputElement;
+  const zoomCtl = h('label', { class: 'ctl', hidden: true }, h('span', {}, 'Zoom'), zoom);
+  const exposure = h('input', { type: 'range', 'aria-label': 'Exposure' }) as HTMLInputElement;
+  const exposureCtl = h('label', { class: 'ctl', hidden: true }, h('span', {}, 'Exposure'), exposure);
+  const resSelect = h(
+    'select',
+    { 'aria-label': 'Camera resolution' },
+    h('option', { value: '1280x720' }, '720p'),
+    h('option', { value: '1920x1080', selected: true }, '1080p'),
+    h('option', { value: '3840x2160' }, '4K (slow)'),
+  ) as HTMLSelectElement;
+  const advice = h('div', { class: 'advice' });
   const videoFile = h('input', { type: 'file', accept: 'video/*', class: 'visually-hidden', id: 'vfile' }) as HTMLInputElement;
   const videoLink = h('label', { for: 'vfile', class: 'link' }, 'Decode a recorded video');
   const resetBtn = h('button', { type: 'button', class: 'secondary', hidden: true }, 'Start over');
@@ -33,7 +44,8 @@ export function mountReceive(root: HTMLElement): () => void {
     bar,
     status,
     stats,
-    h('div', { class: 'row' }, startBtn, camSelect, zoom, resetBtn),
+    advice,
+    h('div', { class: 'row' }, startBtn, resetBtn, camSelect, resSelect, zoomCtl, exposureCtl),
     h('div', { class: 'row small' }, videoFile, videoLink),
     err,
     result,
@@ -88,6 +100,7 @@ export function mountReceive(root: HTMLElement): () => void {
       tilesTotal += r.tilesTotal;
     }
     lastResult = r;
+    updateAdvice(r);
     if (r.payloads.length) {
       if (!firstPacketAt) firstPacketAt = performance.now();
       recv.add(r.payloads);
@@ -101,6 +114,25 @@ export function mountReceive(root: HTMLElement): () => void {
     drawOverlay();
     updateUi();
     if (recv.completed && !done) finish();
+  };
+
+  // Rolling link statistics for advice (last ~30 decoded frames).
+  const recent: { located: boolean; ok: number; total: number; corr: number }[] = [];
+  const updateAdvice = (r: FrameResult) => {
+    recent.push({ located: r.stage === 'decoded', ok: r.tilesOk, total: r.tilesTotal, corr: r.meanCorrections });
+    if (recent.length > 30) recent.shift();
+    if (recent.length < 10) return;
+    const loc = recent.filter((x) => x.located);
+    const ok = loc.reduce((a, x) => a + x.ok, 0);
+    const tot = loc.reduce((a, x) => a + x.total, 0);
+    const frac = tot ? ok / tot : 0;
+    const corr = loc.length ? loc.reduce((a, x) => a + x.corr, 0) / loc.length : 0;
+    const nsym = lastResult?.format ? [24, 40, 56, 67][lastResult.format.ecc] : 40;
+    if (loc.length < recent.length * 0.3)
+      advice.textContent = 'Tip: move closer so the code fills most of the view, hold steady, and avoid reflections.';
+    else if (frac < 0.5) advice.textContent = 'Weak link: ask the sender to lower the density or use fewer colours.';
+    else if (frac > 0.95 && corr < nsym * 0.1) advice.textContent = 'Strong link: the sender can raise density, colours or FPS for more speed.';
+    else advice.textContent = '';
   };
 
   const updateUi = () => {
@@ -223,8 +255,8 @@ export function mountReceive(root: HTMLElement): () => void {
         audio: false,
         video: {
           ...(deviceId ? { deviceId: { exact: deviceId } } : { facingMode: { ideal: 'environment' } }),
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
+          width: { ideal: Number(resSelect.value.split('x')[0]) },
+          height: { ideal: Number(resSelect.value.split('x')[1]) },
           frameRate: { ideal: 30 },
         },
       });
@@ -240,15 +272,27 @@ export function mountReceive(root: HTMLElement): () => void {
     } catch {
       /* unsupported */
     }
-    const caps = (track.getCapabilities?.() ?? {}) as MediaTrackCapabilities & { zoom?: { min: number; max: number; step: number } };
+    type Range = { min: number; max: number; step: number };
+    const caps = (track.getCapabilities?.() ?? {}) as MediaTrackCapabilities & { zoom?: Range; exposureCompensation?: Range };
+    const settings = track.getSettings() as MediaTrackSettings & { zoom?: number; exposureCompensation?: number };
+    if (caps.exposureCompensation && caps.exposureCompensation.max > caps.exposureCompensation.min) {
+      const ec = caps.exposureCompensation;
+      exposureCtl.hidden = false;
+      exposure.min = String(ec.min);
+      exposure.max = String(ec.max);
+      exposure.step = String(ec.step || 0.1);
+      exposure.value = String(settings.exposureCompensation ?? 0);
+      exposure.oninput = () => track.applyConstraints({ advanced: [{ exposureCompensation: Number(exposure.value) } as MediaTrackConstraintSet] }).catch(() => {});
+    } else exposureCtl.hidden = true;
     if (caps.zoom && caps.zoom.max > caps.zoom.min) {
+      zoomCtl.hidden = false;
       zoom.hidden = false;
       zoom.min = String(caps.zoom.min);
       zoom.max = String(caps.zoom.max);
       zoom.step = String(caps.zoom.step || 0.1);
-      zoom.value = String((track.getSettings() as { zoom?: number }).zoom ?? caps.zoom.min);
+      zoom.value = String(settings.zoom ?? caps.zoom.min);
       zoom.oninput = () => track.applyConstraints({ advanced: [{ zoom: Number(zoom.value) } as MediaTrackConstraintSet] }).catch(() => {});
-    } else zoom.hidden = true;
+    } else zoomCtl.hidden = true;
     const devices = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'videoinput');
     if (devices.length > 1) {
       camSelect.hidden = false;
@@ -309,6 +353,8 @@ export function mountReceive(root: HTMLElement): () => void {
     done = false;
     lastResult = null;
     frames = located = tilesOk = tilesTotal = 0;
+    recent.length = 0;
+    advice.textContent = '';
     firstPacketAt = 0;
     fill.style.width = '0%';
     fileLine.textContent = '';
@@ -322,6 +368,9 @@ export function mountReceive(root: HTMLElement): () => void {
 
   startBtn.addEventListener('click', () => openCamera());
   camSelect.addEventListener('change', () => openCamera(camSelect.value));
+  resSelect.addEventListener('change', () => {
+    if (stream) openCamera(camSelect.value || undefined);
+  });
   resetBtn.addEventListener('click', () => {
     const hadStream = !!stream || done;
     reset();

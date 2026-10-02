@@ -38,6 +38,8 @@ export interface FrameResult {
 export interface DecoderOptions {
   /** Decision-directed refinement of the colour references. */
   refine?: boolean;
+  /** Decision-feedback cancellation of colour bleed from neighbouring cells. */
+  equalize?: boolean;
   /** Retry failed tiles with low-confidence bytes marked as erasures. */
   erasures?: boolean;
 }
@@ -50,6 +52,8 @@ interface Located {
   white: number;
   quadIndex: number;
   assignment: number;
+  /** Corner (0..3) whose finder was not detected and was inferred from the other three. */
+  inferred?: number;
 }
 
 function bilinearGray(g: Uint8Array, w: number, h: number, x: number, y: number): number {
@@ -131,13 +135,42 @@ function candidateQuads(cands: FinderCandidate[], max = 6): FinderCandidate[][] 
   return quads.slice(0, max).map((x) => x.q);
 }
 
+/**
+ * Quads built from three finders when the fourth was missed (glare, a finger, the frame edge).
+ * The corner between the two shorter triangle sides is the one adjacent to both others, so the
+ * missing corner completes the parallelogram opposite it. Returns clockwise quads plus the index
+ * of the inferred point.
+ */
+function triangleQuads(cands: FinderCandidate[], max = 4): { q: FinderCandidate[]; inferred: number }[] {
+  const top = cands.slice(0, 8);
+  const out: { q: FinderCandidate[]; inferred: number; area: number }[] = [];
+  for (let a = 0; a < top.length; a++)
+    for (let b = a + 1; b < top.length; b++)
+      for (let c = b + 1; c < top.length; c++) {
+        const t = [top[a], top[b], top[c]];
+        const mn = Math.min(...t.map((p) => p.module)), mx = Math.max(...t.map((p) => p.module));
+        if (mx > mn * 2.5) continue;
+        const d2 = (p: FinderCandidate, r: FinderCandidate) => (p.x - r.x) ** 2 + (p.y - r.y) ** 2;
+        const sides = [d2(t[1], t[2]), d2(t[0], t[2]), d2(t[0], t[1])]; // side opposite vertex i
+        const v = sides.indexOf(Math.max(...sides));
+        const p1 = t[(v + 1) % 3], p2 = t[(v + 2) % 3], pv = t[v];
+        const missing: FinderCandidate = { x: p1.x + p2.x - pv.x, y: p1.y + p2.y - pv.y, module: (p1.module + p2.module) / 2, count: 0 };
+        const area = Math.abs((p1.x - pv.x) * (p2.y - pv.y) - (p1.y - pv.y) * (p2.x - pv.x));
+        if (area < (mx * 30) ** 2) continue;
+        const q = clockwise([pv, p1, missing, p2]);
+        out.push({ q, inferred: q.indexOf(missing), area });
+      }
+  out.sort((x, y) => y.area - x.area);
+  return out.slice(0, max);
+}
+
 function dimCandidates(est: number, preferred?: number): number[] {
   const out: number[] = [];
-  const lo = Math.max(MIN_DIM, Math.floor((est * 0.85) / 8) * 8);
-  const hi = Math.min(MAX_DIM, Math.ceil((est * 1.15) / 8) * 8);
+  const lo = Math.max(MIN_DIM, Math.floor((est * 0.88) / 8) * 8);
+  const hi = Math.min(MAX_DIM, Math.ceil((est * 1.12) / 8) * 8);
   for (let d = lo; d <= hi; d += 8) out.push(d);
   out.sort((a, b) => Math.abs(a - est) - Math.abs(b - est));
-  const res = out.slice(0, 3);
+  const res = out.slice(0, 4);
   if (preferred && preferred >= lo && preferred <= hi && !res.includes(preferred)) res.unshift(preferred);
   if (preferred && res.includes(preferred)) {
     res.splice(res.indexOf(preferred), 1);
@@ -161,10 +194,15 @@ export class FrameDecoder {
   private cellRGB = new Float32Array(0);
   private cellSym = new Uint8Array(0);
   private cellConf = new Float32Array(0);
+  private cellExp = new Float32Array(0);
+  private cellEq = new Float32Array(0);
+  private eqV = new Float32Array(0);
+  private eqN4 = new Float32Array(0);
+  private eqN8 = new Float32Array(0);
   readonly opts: Required<DecoderOptions>;
 
   constructor(opts: DecoderOptions = {}) {
-    this.opts = { refine: true, erasures: true, ...opts };
+    this.opts = { refine: true, equalize: true, erasures: true, ...opts };
   }
 
   decode(frame: RGBAFrame): FrameResult {
@@ -197,7 +235,7 @@ export class FrameDecoder {
       ms: 0,
       timings,
     };
-    if (finders.length < 4) return { ...base, ms: performance.now() - t0 };
+    if (finders.length < 3) return { ...base, ms: performance.now() - t0 };
     const loc = this.locate(gray.data, w, h, finders);
     mark('locate');
     if (!loc) return { ...base, stage: 'no-format', ms: performance.now() - t0 };
@@ -209,35 +247,49 @@ export class FrameDecoder {
 
   private locate(g: Uint8Array, w: number, h: number, finders: FinderCandidate[]): Located | null {
     const quads = candidateQuads(finders);
+    for (let qi = 0; qi < quads.length; qi++) {
+      const loc = this.tryQuad(g, w, h, quads[qi], qi);
+      if (loc) return loc;
+    }
+    if (finders.length >= 3) {
+      const tris = triangleQuads(finders);
+      for (let ti = 0; ti < tris.length; ti++) {
+        const loc = this.tryQuad(g, w, h, tris[ti].q, quads.length + ti, tris[ti].inferred);
+        if (loc) return loc;
+      }
+    }
+    return null;
+  }
+
+  /** Tries every corner assignment and grid size for a clockwise quad of finder centres. */
+  private tryQuad(g: Uint8Array, w: number, h: number, q: FinderCandidate[], qi: number, inferredQ?: number): Located | null {
     const assignments: number[] = [];
     const lastA = this.last?.assignment;
     if (lastA !== undefined) assignments.push(lastA);
     for (let a = 0; a < 8; a++) if (a !== lastA) assignments.push(a);
-    for (let qi = 0; qi < quads.length; qi++) {
-      const q = quads[qi];
-      for (const a of assignments) {
-        const rot = a & 3;
-        const mirror = a >= 4;
-        // corners in TL, TR, BR, BL order
-        const c: FinderCandidate[] = [];
-        for (let k = 0; k < 4; k++) c.push(q[(rot + (mirror ? -k + 4 : k)) % 4]);
-        // Distance between finder centres in finder modules.
-        const dist = (p: FinderCandidate, r: FinderCandidate) => Math.hypot(p.x - r.x, p.y - r.y) / ((p.module + r.module) / 2);
-        const dw = (dist(c[0], c[1]) + dist(c[3], c[2])) / 2;
-        const dh = (dist(c[0], c[3]) + dist(c[1], c[2])) / 2;
-        for (const fm of [1, 2]) {
-          const ws = dimCandidates(fm * (dw + 7), this.last?.format.width);
-          const hs = dimCandidates(fm * (dh + 7), this.last?.format.height);
-          for (const W of ws) {
-            for (const H of hs) {
-              if (finderModule(W, H) !== fm) continue;
-              const src = [0, 1, 2, 3].map((k) => finderCenter(W, H, fm, k));
-              const H0 = fitHomography(src, c);
-              if (!H0) continue;
-              const f = this.readFormat(g, w, h, H0, W, H, fm);
-              if (f && f.format.width === W && f.format.height === H) {
-                return { format: f.format, corners: c.map((p) => ({ x: p.x, y: p.y })), H0, black: f.black, white: f.white, quadIndex: qi, assignment: a };
-              }
+    for (const a of assignments) {
+      const rot = a & 3;
+      const mirror = a >= 4;
+      // corners in TL, TR, BR, BL order
+      const c: FinderCandidate[] = [];
+      for (let k = 0; k < 4; k++) c.push(q[(rot + (mirror ? -k + 4 : k)) % 4]);
+      const inferred = inferredQ === undefined ? undefined : c.indexOf(q[inferredQ]);
+      // Distance between finder centres in finder modules.
+      const dist = (p: FinderCandidate, r: FinderCandidate) => Math.hypot(p.x - r.x, p.y - r.y) / ((p.module + r.module) / 2);
+      const dw = (dist(c[0], c[1]) + dist(c[3], c[2])) / 2;
+      const dh = (dist(c[0], c[3]) + dist(c[1], c[2])) / 2;
+      for (const fm of [1, 2]) {
+        const ws = dimCandidates(fm * (dw + 7), this.last?.format.width);
+        const hs = dimCandidates(fm * (dh + 7), this.last?.format.height);
+        for (const W of ws) {
+          for (const H of hs) {
+            if (finderModule(W, H) !== fm) continue;
+            const src = [0, 1, 2, 3].map((k) => finderCenter(W, H, fm, k));
+            const H0 = fitHomography(src, c);
+            if (!H0) continue;
+            const f = this.readFormat(g, w, h, H0, W, H, fm, inferred);
+            if (f && f.format.width === W && f.format.height === H) {
+              return { format: f.format, corners: c.map((p) => ({ x: p.x, y: p.y })), H0, black: f.black, white: f.white, quadIndex: qi, assignment: a, inferred };
             }
           }
         }
@@ -246,12 +298,12 @@ export class FrameDecoder {
     return null;
   }
 
-  private readFormat(g: Uint8Array, w: number, h: number, H0: Mat3, W: number, H: number, fm: number): { format: FrameFormat; black: number; white: number } | null {
+  private readFormat(g: Uint8Array, w: number, h: number, H0: Mat3, W: number, H: number, fm: number, skip?: number): { format: FrameFormat; black: number; white: number } | null {
     const at = (gx: number, gy: number) => {
       const p = apply(H0, gx, gy);
       return bilinearGray(g, w, h, p.x, p.y);
     };
-    let blackSum = 0, whiteSum = 0;
+    let blackSum = 0, whiteSum = 0, used = 0;
     let found: FrameFormat | null = null;
     const votes = new Int32Array(32);
     const thresholds: number[] = [];
@@ -260,11 +312,14 @@ export class FrameDecoder {
       const d = 2 * fm;
       const black = at(fc.x, fc.y);
       const white = (at(fc.x + d, fc.y) + at(fc.x - d, fc.y) + at(fc.x, fc.y + d) + at(fc.x, fc.y - d)) / 4;
+      thresholds.push((black + white) / 2);
+      if (corner === skip) continue;
       blackSum += black;
       whiteSum += white;
-      thresholds.push((black + white) / 2);
+      used++;
     }
-    if (whiteSum - blackSum < 4 * 20) return null;
+    if (whiteSum - blackSum < used * 20) return null;
+    if (skip !== undefined) thresholds[skip] = (blackSum + whiteSum) / (2 * used);
     const bitsPerCorner: Uint8Array[] = [];
     for (let corner = 0; corner < 4; corner++) {
       const bits = new Uint8Array(32);
@@ -287,7 +342,7 @@ export class FrameDecoder {
       }
     }
     if (!found) return null;
-    return { format: found, black: blackSum / 4, white: whiteSum / 4 };
+    return { format: found, black: blackSum / used, white: whiteSum / used };
   }
 
   private refineNodes(g: Uint8Array, w: number, h: number, layout: Layout, loc: Located): { pos: Pt[]; found: number; total: number } {
@@ -299,6 +354,7 @@ export class FrameDecoder {
     const contrast = Math.max(20, loc.white - loc.black);
     const cornerIdx = [0, nx - 1, N - 1, N - nx];
     for (let k = 0; k < 4; k++) {
+      if (k === loc.inferred) continue;
       pos[cornerIdx[k]] = loc.corners[k];
       disp[cornerIdx[k]] = { x: 0, y: 0 };
     }
@@ -382,6 +438,45 @@ export class FrameDecoder {
         found++;
       }
     }
+    if (loc.inferred !== undefined) {
+      // Find the missed finder near where its neighbours put it: dark centre, light ring at two
+      // modules, dark ring at three.
+      const idx = cornerIdx[loc.inferred];
+      const node = nodes[idx];
+      const fm = layout.fm;
+      const base = apply(H0, node.gx, node.gy);
+      const nd = neighbourDisp(idx, 1) ?? neighbourDisp(idx, 2) ?? { x: 0, y: 0 };
+      const pred = { x: base.x + nd.x, y: base.y + nd.y };
+      const px = apply(H0, node.gx + fm, node.gy), py = apply(H0, node.gx, node.gy + fm);
+      const ex = { x: px.x - base.x, y: px.y - base.y }, ey = { x: py.x - base.x, y: py.y - base.y };
+      const mod = Math.max(Math.hypot(ex.x, ex.y), Math.hypot(ey.x, ey.y));
+      const score = (cx: number, cy: number) => {
+        let light = 0, dark = 0;
+        for (const [a, b] of ALIGN_RING1) {
+          light += bilinearGray(g, w, h, cx + 2 * (a * ex.x + b * ey.x), cy + 2 * (a * ex.y + b * ey.y));
+          dark += bilinearGray(g, w, h, cx + 3 * (a * ex.x + b * ey.x), cy + 3 * (a * ex.y + b * ey.y));
+        }
+        const c0 = bilinearGray(g, w, h, cx, cy);
+        return (light / 8 - (c0 + dark / 8) / 2) / contrast;
+      };
+      const R = 3 * mod;
+      let best = -Infinity, bx = pred.x, by = pred.y;
+      for (let st = Math.max(1, mod / 3), first = true; st >= 0.25; st /= 2, first = false) {
+        const r = first ? R : st * 2;
+        const cx0 = bx, cy0 = by;
+        for (let dy = -r; dy <= r; dy += st)
+          for (let dx = -r; dx <= r; dx += st) {
+            const sc = score(cx0 + dx, cy0 + dy);
+            if (sc > best) {
+              best = sc;
+              bx = cx0 + dx;
+              by = cy0 + dy;
+            }
+          }
+      }
+      pos[idx] = best > 0.3 ? { x: bx, y: by } : pred;
+      loc.corners[loc.inferred] = pos[idx];
+    }
     for (let idx = 0; idx < N; idx++) {
       if (pos[idx]) continue;
       const node = nodes[idx];
@@ -391,6 +486,95 @@ export class FrameDecoder {
     }
     return { pos, found, total: order.length };
   }
+
+  /**
+   * Decision-feedback equaliser for optical blur. Models each observed cell as its expected
+   * colour plus leakage from its 4-neighbours (b4) and diagonal neighbours (b8), relative to the
+   * mean colour. Fits b4, b8 by least squares against the current decisions and writes
+   * bleed-corrected samples to `out`.
+   */
+  private equalize(layout: Layout, rgb: Float32Array, exp: Float32Array, out: Float32Array): void {
+    const { W, H, role } = layout;
+    const n = W * H;
+    if (this.eqV.length !== n * 3) {
+      this.eqV = new Float32Array(n * 3);
+      this.eqN4 = new Float32Array(n * 3);
+      this.eqN8 = new Float32Array(n * 3);
+    }
+    const V = this.eqV, N4 = this.eqN4, N8 = this.eqN8;
+    // Neighbour value: decided colour for data cells, the observation for everything else,
+    // relative to the mean data colour (so cells outside the grid contribute nothing).
+    let m0 = 0, m1 = 0, m2 = 0, nData = 0;
+    for (let i = 0; i < n; i++) {
+      if (role[i] !== 0) continue;
+      m0 += exp[i * 3];
+      m1 += exp[i * 3 + 1];
+      m2 += exp[i * 3 + 2];
+      nData++;
+    }
+    if (!nData) return;
+    m0 /= nData;
+    m1 /= nData;
+    m2 /= nData;
+    for (let i = 0; i < n; i++) {
+      const src = role[i] === 0 ? exp : rgb;
+      V[i * 3] = src[i * 3] - m0;
+      V[i * 3 + 1] = src[i * 3 + 1] - m1;
+      V[i * 3 + 2] = src[i * 3 + 2] - m2;
+    }
+    let a11 = 0, a12 = 0, a22 = 0, b1 = 0, b2 = 0;
+    for (let y = 0; y < H; y++) {
+      const up = y > 0, down = y < H - 1;
+      for (let x = 0; x < W; x++) {
+        const i = y * W + x;
+        if (role[i] !== 0) continue;
+        const left = x > 0, right = x < W - 1;
+        for (let ch = 0; ch < 3; ch++) {
+          const o = i * 3 + ch;
+          let s4 = 0, s8 = 0;
+          if (left) s4 += V[o - 3];
+          if (right) s4 += V[o + 3];
+          if (up) {
+            s4 += V[o - W * 3];
+            if (left) s8 += V[o - W * 3 - 3];
+            if (right) s8 += V[o - W * 3 + 3];
+          }
+          if (down) {
+            s4 += V[o + W * 3];
+            if (left) s8 += V[o + W * 3 - 3];
+            if (right) s8 += V[o + W * 3 + 3];
+          }
+          N4[o] = s4;
+          N8[o] = s8;
+          const r = rgb[o] - exp[o];
+          a11 += s4 * s4;
+          a12 += s4 * s8;
+          a22 += s8 * s8;
+          b1 += r * s4;
+          b2 += r * s8;
+        }
+      }
+    }
+    const det = a11 * a22 - a12 * a12;
+    let beta4 = 0, beta8 = 0;
+    if (Math.abs(det) > 1e-9) {
+      beta4 = (b1 * a22 - b2 * a12) / det;
+      beta8 = (a11 * b2 - a12 * b1) / det;
+    }
+    beta4 = Math.min(0.2, Math.max(0, beta4));
+    beta8 = Math.min(0.1, Math.max(0, beta8));
+    for (let i = 0; i < n; i++) {
+      if (role[i] !== 0) continue;
+      for (let ch = 0; ch < 3; ch++) {
+        const o = i * 3 + ch;
+        out[o] = rgb[o] - beta4 * N4[o] - beta8 * N8[o];
+      }
+    }
+    this.lastBeta = [beta4, beta8];
+  }
+
+  /** Bleed coefficients fitted on the last frame (diagnostics). */
+  lastBeta: [number, number] = [0, 0];
 
   private keystreams(layout: Layout): Uint8Array[] {
     let ks = this.ksCache.get(layout.key);
@@ -513,9 +697,12 @@ export class FrameDecoder {
       this.cellRGB = new Float32Array(nCells * 3);
       this.cellSym = new Uint8Array(nCells);
       this.cellConf = new Float32Array(nCells);
+      this.cellExp = new Float32Array(nCells * 3);
+      this.cellEq = new Float32Array(nCells * 3);
     }
-    const rgb = this.cellRGB, sym = this.cellSym, conf = this.cellConf;
+    const rgb = this.cellRGB, sym = this.cellSym, conf = this.cellConf, exp = this.cellExp;
     for (const t of tiles) for (let c = 0; c < t.cells.length; c++) sampleCell(t.cells[c], rgb, t.cells[c] * 3);
+    if (this.opts.equalize) for (const c of layout.contextCells) sampleCell(c, rgb, c * 3);
     this.mark('sample');
 
     // Nearest expected colour, where expected colours are bilinearly interpolated between the
@@ -525,7 +712,7 @@ export class FrameDecoder {
     const P3 = P * 3;
     const E0 = new Float32Array(P3), E1 = new Float32Array(P3);
     const colStart = layout.quadColStart;
-    const classify = () => {
+    const classify = (src: Float32Array) => {
       for (let y = 0; y < GH; y++) {
         const qj = (layout.cellQuad[y * W] / nqx) | 0;
         const u = layout.cellU[y * W];
@@ -542,7 +729,7 @@ export class FrameDecoder {
             const cell = y * W + x;
             if (role[cell] !== 0 /* Role.Data */) continue;
             const t = layout.cellT[cell];
-            const s0 = rgb[cell * 3], s1 = rgb[cell * 3 + 1], s2 = rgb[cell * 3 + 2];
+            const s0 = src[cell * 3], s1 = src[cell * 3 + 1], s2 = src[cell * 3 + 2];
             let b1 = Infinity, b2 = Infinity, bi = 0;
             for (let p = 0, q = 0; p < P; p++, q += 3) {
               const d0 = s0 - (E0[q] + E1[q] * t);
@@ -557,11 +744,15 @@ export class FrameDecoder {
             }
             sym[cell] = bi;
             conf[cell] = Math.sqrt(b2) - Math.sqrt(b1);
+            const q = bi * 3;
+            exp[cell * 3] = E0[q] + E1[q] * t;
+            exp[cell * 3 + 1] = E0[q + 1] + E1[q + 1] * t;
+            exp[cell * 3 + 2] = E0[q + 2] + E1[q + 2] * t;
           }
         }
       }
     };
-    classify();
+    classify(rgb);
     this.mark('classify1');
 
     if (this.opts.refine) {
@@ -601,7 +792,13 @@ export class FrameDecoder {
         for (let ch = 0; ch < 3; ch++) ref[a * 3 + ch] = (ref[a * 3 + ch] * rw + acc[a * 3 + ch]) / tw;
       }
       this.mark('refine');
-      classify();
+      classify(rgb);
+    }
+
+    if (this.opts.equalize) {
+      this.equalize(layout, rgb, exp, this.cellEq);
+      this.mark('equalize');
+      classify(this.cellEq);
     }
 
     this.mark('classify');

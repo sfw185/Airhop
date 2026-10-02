@@ -7,6 +7,7 @@ import { FrameDecoder } from '../src/core/frameDecoder';
 import { getLayout } from '../src/core/layout';
 import { mulberry32 } from '../src/core/prng';
 import { packFile, ReceiveSession, SendSession, unpackFile } from '../src/core/transfer';
+import { packTile, PACKET_SIZE } from '../src/core/tile';
 import { capture, randomCamera } from '../src/sim/channel';
 import { decodeFormatBits, encodeFormatBits, type FrameFormat } from '../src/core/format';
 
@@ -93,5 +94,42 @@ describe('end-to-end over the simulated channel', () => {
     const file = await unpackFile(recv.completed!.bytes);
     expect(file.crcOk).toBe(true);
     expect(new TextDecoder().decode(file.data)).toBe(text);
+  });
+});
+
+describe('robustness', () => {
+  it('decodes with one finder hidden (glare or a finger over a corner)', async () => {
+    for (const [W, H] of [[128, 72], [256, 144]]) {
+      const layout = getLayout({ width: W, height: H, bpc: 2, ecc: 1 });
+      const tiles = layout.tiles.map((_, i) => packTile({ session: 7, transferLength: 5000, packet: new Uint8Array(PACKET_SIZE).fill(i) }));
+      const screen = rasterize(layout, encodeFrameRGB(layout, tiles), 6);
+      for (let corner = 0; corner < 4; corner++) {
+        const cam = randomCamera(40 + corner, screen.width, screen.height, { width: 1280, height: 720, fill: 0.85, severity: 'mild' });
+        const img = capture(screen, cam);
+        // Blow out a disc over the chosen finder.
+        const c = cam.corners[corner];
+        const toward = cam.corners[(corner + 2) % 4];
+        const fx = c.x + (toward.x - c.x) * 0.035, fy = c.y + (toward.y - c.y) * 0.035;
+        const r = Math.hypot(toward.x - c.x, toward.y - c.y) * 0.04;
+        for (let y = Math.max(0, Math.floor(fy - r)); y < Math.min(img.height, fy + r); y++)
+          for (let x = Math.max(0, Math.floor(fx - r)); x < Math.min(img.width, fx + r); x++)
+            if ((x - fx) ** 2 + (y - fy) ** 2 < r * r) img.data.fill(250, (y * img.width + x) * 4, (y * img.width + x) * 4 + 3);
+        const res = new FrameDecoder().decode(img);
+        expect(res.stage, `${W}x${H} corner ${corner}`).toBe('decoded');
+        expect(res.tilesOk, `${W}x${H} corner ${corner}`).toBeGreaterThanOrEqual(layout.tiles.length * 0.7);
+      }
+    }
+  });
+
+  it('equaliser recovers heavily blurred 8-colour frames', async () => {
+    const layout = getLayout({ width: 256, height: 144, bpc: 3, ecc: 1 });
+    const tiles = layout.tiles.map((_, i) => packTile({ session: 7, transferLength: 5000, packet: randomBytes(PACKET_SIZE, i) }));
+    const screen = rasterize(layout, encodeFrameRGB(layout, tiles), 6);
+    const cam = { ...randomCamera(9, screen.width, screen.height, { width: 1280, height: 720, fill: 0.9, severity: 'mild' }), blur: 1.9 };
+    const img = capture(screen, cam);
+    const plain = new FrameDecoder({ equalize: false }).decode(img);
+    const eq = new FrameDecoder().decode(img);
+    expect(eq.tilesOk).toBeGreaterThan(layout.tiles.length * 0.8);
+    expect(eq.tilesOk).toBeGreaterThan(plain.tilesOk);
   });
 });

@@ -428,3 +428,16 @@ nav .title {
 [hidden] {
   display: none !important;
 }
+
+.advice {
+  color: var(--warn);
+  font-size: 0.9rem;
+}
+
+.advice:empty {
+  display: none;
+}
+
+.sheet .ctl input[type='range'] {
+  width: 8rem;
+}

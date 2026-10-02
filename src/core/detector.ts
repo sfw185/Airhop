@@ -86,6 +86,14 @@ export function toGray(rgba: ArrayLike<number>, width: number, height: number, o
   return { width, height, data };
 }
 
+/**
+ * Distance between the centres of the two outer dark runs: six modules. Unlike the total width it
+ * is not biased by where the binarisation threshold falls on blurred edges.
+ */
+function outerSpan(c: number[]): number {
+  return c[0] / 2 + c[1] + c[2] + c[3] + c[4] / 2;
+}
+
 function ratioOk(c: number[]): boolean {
   const total = c[0] + c[1] + c[2] + c[3] + c[4];
   if (total < 7) return false;
@@ -104,7 +112,7 @@ export function findFinders(bin: Uint8Array, w: number, h: number): FinderCandid
   const cands: FinderCandidate[] = [];
   const at = (x: number, y: number) => bin[y * w + x];
 
-  const crossCheck = (cx: number, cy: number, dx: number, dy: number, maxCount: number, origTotal: number): { pos: number; total: number } | null => {
+  const crossCheck = (cx: number, cy: number, dx: number, dy: number, maxCount: number, origTotal: number): { pos: number; total: number; span: number } | null => {
     // Walk from (cx, cy) along (dx, dy) in both directions. Returns centre offset along the line.
     const c = [0, 0, 0, 0, 0];
     let x = cx, y = cy;
@@ -154,7 +162,7 @@ export function findFinders(bin: Uint8Array, w: number, h: number): FinderCandid
     if (!ratioOk(c)) return null;
     // Centre of the middle run relative to (cx, cy), in steps.
     const pos = fwd + 0.5 - c[2] / 2;
-    return { pos, total };
+    return { pos, total, span: outerSpan(c) };
   };
 
   const handle = (cxF: number, y: number, counts: number[]) => {
@@ -170,7 +178,7 @@ export function findFinders(bin: Uint8Array, w: number, h: number): FinderCandid
     // Diagonal sanity check.
     const dg = crossCheck(Math.round(fx), Math.round(fy), 1, 1, counts[2] * 2 + 2, total);
     if (!dg) return;
-    const module = (total + v.total + hz.total) / 21;
+    const module = (outerSpan(counts) + v.span + hz.span) / 18;
     for (const c of cands) {
       if (Math.abs(c.x - fx) <= module * 1.5 && Math.abs(c.y - fy) <= module * 1.5 && Math.abs(c.module - module) < Math.max(1, c.module * 0.4)) {
         const n = c.count + 1;
