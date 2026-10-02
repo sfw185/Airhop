@@ -83,7 +83,7 @@ These numbers come from a synthetic camera (`src/sim/channel.ts`) that models pe
 
 ### Is native code faster?
 
-The decoder isn't the bottleneck. A 1080p frame with a 320×176 grid decodes in about 50 ms of single-threaded JavaScript, and the receiver runs up to four decoder workers in parallel. The limits are optical: camera resolution (cells need about 4 camera pixels), the camera's frame rate (browsers usually get 30 fps) and focus and exposure control. A native app would help mostly because it can lock focus and exposure and capture at 60–240 fps, not because it computes faster. WebAssembly SIMD for the decoder is a later option.
+The decoder isn't the bottleneck. A 1080p frame with a 320×176 grid decodes in roughly 50–100 ms of single-threaded JavaScript on a laptop core, and the receiver runs up to four decoder workers in parallel. The limits are optical: camera resolution (cells need about 4 camera pixels), the camera's frame rate (browsers usually get 30 fps) and focus and exposure control. A native app would help mostly because it can lock focus and exposure and capture at 60–240 fps, not because it computes faster. WebAssembly SIMD for the decoder is a later option.
 
 ## Use it
 

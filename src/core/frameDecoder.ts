@@ -54,7 +54,6 @@ interface Located {
   H0: Mat3;
   black: number;
   white: number;
-  quadIndex: number;
   assignment: number;
   /** Corner (0..3) whose finder was not detected and was inferred from the other three. */
   inferred?: number;
@@ -265,14 +264,13 @@ export class FrameDecoder {
 
   private locate(g: Uint8Array, w: number, h: number, finders: FinderCandidate[]): Located | null {
     const quads = candidateQuads(finders);
-    for (let qi = 0; qi < quads.length; qi++) {
-      const loc = this.tryQuad(g, w, h, quads[qi], qi);
+    for (const q of quads) {
+      const loc = this.tryQuad(g, w, h, q);
       if (loc) return loc;
     }
     if (finders.length >= 3) {
-      const tris = triangleQuads(finders);
-      for (let ti = 0; ti < tris.length; ti++) {
-        const loc = this.tryQuad(g, w, h, tris[ti].q, quads.length + ti, tris[ti].inferred);
+      for (const t of triangleQuads(finders)) {
+        const loc = this.tryQuad(g, w, h, t.q, t.inferred);
         if (loc) return loc;
       }
     }
@@ -280,7 +278,7 @@ export class FrameDecoder {
   }
 
   /** Tries every corner assignment and grid size for a clockwise quad of finder centres. */
-  private tryQuad(g: Uint8Array, w: number, h: number, q: FinderCandidate[], qi: number, inferredQ?: number): Located | null {
+  private tryQuad(g: Uint8Array, w: number, h: number, q: FinderCandidate[], inferredQ?: number): Located | null {
     const assignments: number[] = [];
     const lastA = this.last?.assignment;
     if (lastA !== undefined) assignments.push(lastA);
@@ -330,7 +328,7 @@ export class FrameDecoder {
                   }
                 }
               }
-              return { format: best.f.format, corners: best.corners, H0: best.H0, black: best.f.black, white: best.f.white, quadIndex: qi, assignment: a, inferred: best.inferred };
+              return { format: best.f.format, corners: best.corners, H0: best.H0, black: best.f.black, white: best.f.white, assignment: a, inferred: best.inferred };
             }
           }
         }

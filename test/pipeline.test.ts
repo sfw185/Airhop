@@ -132,4 +132,17 @@ describe('robustness', () => {
     expect(eq.tilesOk).toBeGreaterThan(layout.tiles.length * 0.8);
     expect(eq.tilesOk).toBeGreaterThan(plain.tilesOk);
   });
+
+  it('decodes when one corner of the code is outside the camera frame', () => {
+    const layout = getLayout({ width: 320, height: 176, bpc: 2, ecc: 1 });
+    const tiles = layout.tiles.map((_, i) => packTile({ session: 7, transferLength: 5000, packet: randomBytes(PACKET_SIZE, i) }));
+    const screen = rasterize(layout, encodeFrameRGB(layout, tiles), 6);
+    // This camera places the top-left corner above the image, with visible perspective.
+    const cam = randomCamera(5000 + 6 * 31 + 320, screen.width, screen.height, { width: 1280, height: 720, fill: 0.88, severity: 'moderate' });
+    expect(cam.corners[0].y).toBeLessThan(0);
+    const res = new FrameDecoder().decode(capture(screen, cam));
+    expect(res.stage).toBe('decoded');
+    expect(res.inferred).toBe(0);
+    expect(res.tilesOk).toBeGreaterThan(layout.tiles.length * 0.8);
+  });
 });
