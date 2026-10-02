@@ -1,0 +1,430 @@
+:root {
+  --bg: #0f1115;
+  --panel: #171a21;
+  --line: #2a2f3a;
+  --text: #e8eaf0;
+  --muted: #9aa3b2;
+  --accent: #4d7cff;
+  --ok: #33d17a;
+  --warn: #f6c343;
+  --bad: #ff5d5d;
+  color-scheme: dark;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+}
+
+#app {
+  min-height: 100%;
+}
+
+a {
+  color: var(--accent);
+}
+
+button,
+.button,
+select,
+input,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button,
+.button {
+  background: var(--accent);
+  border: 0;
+  border-radius: 10px;
+  padding: 0.65rem 1.1rem;
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-block;
+  font-weight: 600;
+}
+
+button.secondary {
+  background: transparent;
+  border: 1px solid var(--line);
+  font-weight: 500;
+}
+
+select,
+textarea {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.4rem 0.5rem;
+}
+
+textarea {
+  width: 100%;
+  resize: vertical;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+
+nav {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  padding: 0.75rem 1rem;
+}
+
+nav a {
+  text-decoration: none;
+  color: var(--muted);
+}
+
+nav .title {
+  font-weight: 600;
+}
+
+.error {
+  color: var(--bad);
+  min-height: 1em;
+}
+
+.hint,
+.lede {
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+/* Home */
+.home {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 12vh 1.25rem 2rem;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.brand h1 {
+  margin: 0;
+  font-size: 2.4rem;
+  letter-spacing: -0.02em;
+}
+
+.logo {
+  width: 2.2rem;
+  height: 2.2rem;
+  border-radius: 6px;
+  background:
+    linear-gradient(#ff4d4d, #ff4d4d) 60% 60% / 18% 18% no-repeat,
+    linear-gradient(#33d17a, #33d17a) 85% 60% / 18% 18% no-repeat,
+    linear-gradient(#4d7cff, #4d7cff) 60% 85% / 18% 18% no-repeat,
+    linear-gradient(#fff, #fff) 85% 85% / 18% 18% no-repeat,
+    linear-gradient(#000, #000) 20% 20% / 20% 20% no-repeat,
+    linear-gradient(#fff, #fff) 12% 12% / 36% 36% no-repeat,
+    #000;
+  border: 2px solid #fff;
+}
+
+.choices {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin: 2rem 0;
+}
+
+@media (max-width: 520px) {
+  .choices {
+    grid-template-columns: 1fr;
+  }
+}
+
+.choice {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 1.25rem;
+  border-radius: 14px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  text-decoration: none;
+  color: var(--text);
+}
+
+.choice strong {
+  font-size: 1.3rem;
+}
+
+.choice span {
+  color: var(--muted);
+}
+
+.choice:hover {
+  border-color: var(--accent);
+}
+
+.how summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.how p {
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.home footer {
+  margin-top: 3rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+/* Sender setup */
+.panel {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 0 1.25rem 2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.panel nav {
+  padding-left: 0;
+}
+
+.drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 3rem 1rem;
+  border: 2px dashed var(--line);
+  border-radius: 14px;
+  cursor: pointer;
+}
+
+.drop strong {
+  font-size: 1.2rem;
+}
+
+.drop span {
+  color: var(--muted);
+}
+
+.drop.over {
+  border-color: var(--accent);
+}
+
+.drop.busy {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+/* Sender running */
+.sender {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+}
+
+.toolbar {
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  padding: 0.5rem 0.75rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1rem;
+  align-items: center;
+  font-size: 0.9rem;
+}
+
+.toolbar .file {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.toolbar .file strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 40ch;
+}
+
+.toolbar .file span,
+.toolbar .info {
+  color: var(--muted);
+}
+
+.toolbar .info {
+  flex-basis: 100%;
+  font-variant-numeric: tabular-nums;
+}
+
+.toolbar .warn {
+  flex-basis: 100%;
+  color: var(--warn);
+}
+
+.toolbar .warn:empty {
+  display: none;
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.9rem;
+  align-items: center;
+  margin-left: auto;
+}
+
+.ctl {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  color: var(--muted);
+}
+
+.ctl output {
+  min-width: 2ch;
+  color: var(--text);
+}
+
+.stage {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  background: #fff;
+}
+
+.stage canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.stage:fullscreen {
+  background: #fff;
+}
+
+/* Receiver */
+.receiver {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.viewport {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  background: #000;
+}
+
+.viewport video,
+.viewport .overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.sheet {
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+  padding: 0.75rem 1rem calc(0.75rem + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-height: 60vh;
+  overflow: auto;
+}
+
+.fileline {
+  font-weight: 600;
+}
+
+.fileline:empty {
+  display: none;
+}
+
+.progress {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.progress .fill {
+  height: 100%;
+  width: 0;
+  background: var(--ok);
+  transition: width 0.2s;
+}
+
+.status {
+  font-size: 0.95rem;
+}
+
+.stats {
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.row {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.row.small {
+  font-size: 0.85rem;
+}
+
+.link {
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.result h2 {
+  margin: 0.3rem 0;
+  color: var(--ok);
+}
+
+.preview {
+  max-width: 100%;
+  max-height: 30vh;
+  border-radius: 8px;
+  background: #000;
+  overflow: auto;
+  white-space: pre-wrap;
+  padding: 0.5rem;
+}
+
+[hidden] {
+  display: none !important;
+}
