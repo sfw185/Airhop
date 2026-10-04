@@ -489,3 +489,24 @@ nav .title {
   white-space: pre-wrap;
   margin: 0.4rem 0 0;
 }
+
+.home footer {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.pwa {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem 1rem;
+  align-items: center;
+}
+
+.pwa:empty {
+  display: none;
+}
+
+.pwa .ok {
+  color: var(--ok);
+}

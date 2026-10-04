@@ -2,8 +2,7 @@ import './ui/style.css';
 import { h } from './ui/dom';
 import { mountReceive } from './ui/receive';
 import { mountSend } from './ui/send';
-import workerUrl from './ui/decode.worker?worker&url';
-import wasmUrl from 'raptorq/raptorq_bg.wasm?url';
+import { initPwa, pwaStatus } from './pwa';
 
 const app = document.getElementById('app')!;
 let unmount: (() => void) | null = null;
@@ -32,7 +31,7 @@ function home(): HTMLElement {
         'Finder, alignment and colour-reference patterns let the receiver correct perspective, lens distortion and colour casts.',
       ),
     ),
-    h('footer', {}, h('a', { href: 'https://github.com/sfw185/airhop' }, 'Source'), ' · nothing is uploaded'),
+    h('footer', {}, pwaStatus, h('div', {}, h('a', { href: 'https://github.com/sfw185/airhop' }, 'Source'), ' · nothing is uploaded')),
   );
 }
 
@@ -49,10 +48,4 @@ function route(): void {
 window.addEventListener('hashchange', route);
 route();
 
-if (import.meta.env.PROD && 'serviceWorker' in navigator && location.protocol === 'https:') {
-  navigator.serviceWorker
-    .register('./sw.js')
-    // Warm the cache with the lazily loaded pieces so both modes work offline later.
-    .then(() => Promise.all([wasmUrl, workerUrl].map((u) => fetch(u).catch(() => {}))))
-    .catch(() => {});
-}
+initPwa();
