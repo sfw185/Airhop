@@ -97,7 +97,7 @@ npm run dev        # http://localhost:5173
 npm run build      # static site in dist/
 ```
 
-Camera access requires a secure context (HTTPS or localhost). To use a phone as the receiver, serve over HTTPS. The included workflow publishes the default branch to GitHub Pages, served at [airhop.app](https://airhop.app) (custom domain set in **Settings → Pages**). The build uses relative paths, so it also works from any sub-path, such as a fork's `user.github.io/Airhop/`. Once a device has loaded the page, a service worker keeps it working offline.
+Camera access requires a secure context (HTTPS or localhost). To use a phone as the receiver, serve over HTTPS. The included workflow publishes the default branch to GitHub Pages, served at [airhop.app](https://airhop.app). The build uses relative paths, so it also works from any sub-path, such as a fork's `user.github.io/Airhop/`. Once a device has loaded the page, a service worker keeps it working offline.
 
 1. On the sending device, open **Send** and pick a file (or paste text). Go fullscreen.
 2. On the receiving device, open **Receive**, start the camera, and fill the view with the sender's screen. Hold steady; propping the phone up helps.
