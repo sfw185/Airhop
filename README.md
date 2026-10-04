@@ -2,6 +2,8 @@
 
 Send files between devices with a screen and a camera. Airhop runs entirely in the browser: no network, no pairing, no install, nothing uploaded.
 
+**Try it: [airhop.app](https://airhop.app)**
+
 The sender shows the file as an animated stream of colour codes. The receiver points a camera at it and rebuilds the file. It's an air gap you can cross with a phone.
 
 Inspired by [Decimen Optical Transfer](https://www.reddit.com/r/ClaudeAI/s/R74T5q1CWY), which streams animated QR codes with LT fountain codes at up to ~180 kb/s. Airhop keeps the fountain-code idea but replaces QR with a barcode format built for video.
@@ -95,7 +97,7 @@ npm run dev        # http://localhost:5173
 npm run build      # static site in dist/
 ```
 
-Camera access requires a secure context (HTTPS or localhost). To use a phone as the receiver, serve over HTTPS. The included workflow publishes the default branch to GitHub Pages: in **Settings → Pages**, set **Source** to **GitHub Actions**, then re-run the workflow or push. Once a device has loaded the page, a service worker keeps it working offline.
+Camera access requires a secure context (HTTPS or localhost). To use a phone as the receiver, serve over HTTPS. The included workflow publishes the default branch to GitHub Pages, served at [airhop.app](https://airhop.app) (custom domain set in **Settings → Pages**). The build uses relative paths, so it also works from any sub-path, such as a fork's `user.github.io/Airhop/`. Once a device has loaded the page, a service worker keeps it working offline.
 
 1. On the sending device, open **Send** and pick a file (or paste text). Go fullscreen.
 2. On the receiving device, open **Receive**, start the camera, and fill the view with the sender's screen. Hold steady; propping the phone up helps.
